@@ -1,6 +1,7 @@
 mod add;
 mod build;
 mod cmin;
+mod cov;
 mod fmt;
 mod init;
 mod list;
@@ -8,7 +9,8 @@ mod run;
 mod tmin;
 
 pub use self::{
-    add::Add, build::Build, cmin::Cmin, fmt::Fmt, init::Init, list::List, run::Run, tmin::Tmin,
+    add::Add, build::Build, cmin::Cmin, cov::Cov, fmt::Fmt, init::Init, list::List, run::Run,
+    tmin::Tmin,
 };
 
 use std::fmt as stdfmt;
@@ -113,6 +115,12 @@ pub struct BuildOptions {
     #[structopt(long = "target-dir")]
     /// Target dir option to pass to cargo build.
     pub target_dir: Option<String>,
+
+    #[structopt(long = "disable-instrumentation")]
+    pub disable_instrumentation: bool,
+
+    #[structopt(long = "instrument_coverage")]
+    pub instrument_coverage: bool,
 }
 
 impl stdfmt::Display for BuildOptions {
@@ -185,6 +193,8 @@ mod test {
             triple: String::from(crate::utils::default_target()),
             unstable_flags: Vec::new(),
             target_dir: None,
+            disable_instrumentation: false,
+            instrument_coverage: false,
         };
 
         let opts = vec![

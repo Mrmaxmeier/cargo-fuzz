@@ -136,6 +136,9 @@ enum Command {
 
     /// Minify a test case
     Tmin(options::Tmin),
+
+    /// Memes
+    Cov(options::Cov),
 }
 
 impl RunCommand for Command {
@@ -149,6 +152,7 @@ impl RunCommand for Command {
             Command::Run(x) => x.run_command(),
             Command::Cmin(x) => x.run_command(),
             Command::Tmin(x) => x.run_command(),
+            Command::Cov(x) => x.run_command(),
         }
     }
 }

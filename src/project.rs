@@ -156,14 +156,15 @@ impl FuzzProject {
             cmd.arg("-Z").arg("build-std");
         }
 
-        let mut rustflags: String = "--cfg fuzzing \
-                                     -Cpasses=sancov \
+        let mut rustflags: String = "--cfg fuzzing".to_owned();
+        if !build.disable_instrumentation {
+            rustflags += " -Cpasses=sancov \
                                      -Cllvm-args=-sanitizer-coverage-level=4 \
                                      -Cllvm-args=-sanitizer-coverage-trace-compares \
                                      -Cllvm-args=-sanitizer-coverage-inline-8bit-counters \
                                      -Cllvm-args=-sanitizer-coverage-pc-table \
                                      -Clink-dead-code"
-            .to_owned();
+        }
         match build.sanitizer {
             Sanitizer::None => {}
             Sanitizer::Memory => {
@@ -176,11 +177,15 @@ impl FuzzProject {
                 sanitizer = build.sanitizer
             )),
         }
-        if build.triple.contains("-linux-") {
+        if build.triple.contains("-linux-") && !build.disable_instrumentation {
             rustflags.push_str(" -Cllvm-args=-sanitizer-coverage-stack-depth");
         }
         if !build.release || build.debug_assertions {
             rustflags.push_str(" -Cdebug-assertions");
+        }
+
+        if build.instrument_coverage {
+            rustflags.push_str(" -Z instrument-coverage");
         }
 
         // If release mode is enabled then we force 1 CGU to be used in rustc.
@@ -191,7 +196,7 @@ impl FuzzProject {
         // performance, we're taking a huge hit relative to actual release mode.
         // Local tests have once showed this to be a ~3x faster runtime where
         // otherwise functions like `Vec::as_ptr` aren't inlined.
-        if !build.dev {
+        if !build.dev && !build.disable_instrumentation {
             rustflags.push_str(" -C codegen-units=1");
         }
 
@@ -560,6 +565,92 @@ impl FuzzProject {
         } else {
             println!("Failed to minimize corpus: {}", status);
         }
+
+        Ok(())
+    }
+
+    fn find_fuzz_binary(&self, bin: &str, build: &BuildOptions) -> PathBuf {
+        // TODO: replace this with something more sophisticated
+        // that parses cargo build --message-format=json or something
+        for &candidate in &[&self.path(), &self.root_project] {
+            let mut candidate = candidate.clone();
+            candidate.push("target");
+            candidate.push(&build.triple);
+            candidate.push("release");
+            candidate.push(bin);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        panic!("couldn't find target binary")
+    }
+
+    pub fn exec_cov(&self, cov: &options::Cov) -> Result<()> {
+        let build_opts = BuildOptions {
+            disable_instrumentation: true,
+            instrument_coverage: true,
+            sanitizer: Sanitizer::None,
+            ..cov.build.clone()
+        };
+
+        self.exec_build(&build_opts, Some(&cov.target))?;
+        let mut cmd = self.cargo_run(&build_opts, &cov.target)?;
+
+        for test_case in &cov.test_case {
+            cmd.arg(&test_case);
+        }
+
+        if cov.test_case.is_empty() {
+            let corpus = self.corpus_for(&cov.target)?;
+            for test_case in std::fs::read_dir(corpus)? {
+                cmd.arg(test_case?.path());
+            }
+        }
+
+        let _ = std::fs::remove_file("/tmp/default.profraw");
+        let _ = std::fs::remove_file("/tmp/default.profdata");
+
+        cmd.env("LLVM_PROFILE_FILE", "/tmp/default.profraw");
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("failed to spawn command: {:?}", cmd))?;
+        let status = child
+            .wait()
+            .with_context(|| format!("failed to wait on child process for command: {:?}", cmd))?;
+        if !status.success() {
+            eprintln!("\n{:─<80}\n", "");
+            return Err(anyhow!("Command `{:?}` exited with {}", cmd, status))
+                .with_context(|| "Test case minimization failed.");
+        }
+
+        // FIXME: this assumes the target has been built with the `nightly` toolchain
+
+        Command::new("rustup")
+            .arg("run")
+            .arg("nightly")
+            .arg("llvm-profdata")
+            .arg("merge")
+            .arg("-sparse")
+            .arg("/tmp/default.profraw")
+            .arg("-o")
+            .arg("/tmp/default.profdata")
+            .status()
+            .expect("failed to merge profdata");
+
+        Command::new("rustup")
+            .arg("run")
+            .arg("nightly")
+            .arg("llvm-cov")
+            .arg("show")
+            .arg(self.find_fuzz_binary(&cov.target, &cov.build))
+            .arg("--instr-profile")
+            .arg("/tmp/default.profdata")
+            .arg("--format=html")
+            .arg("--output-dir=/tmp/cov-report/")
+            .current_dir(self.path()) // make sure that llvm-cov finds relative paths to the source files
+            .status()
+            .expect("failed to generate report");
 
         Ok(())
     }
