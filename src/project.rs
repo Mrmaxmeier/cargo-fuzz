@@ -576,10 +576,14 @@ impl FuzzProject {
             let mut candidate = candidate.clone();
             candidate.push("target");
             candidate.push(&build.triple);
-            candidate.push("release");
+            if build.dev {
+                candidate.push("debug");
+            } else {
+                candidate.push("release");
+            }
             candidate.push(bin);
             if candidate.exists() {
-                return candidate;
+                return candidate.canonicalize().unwrap();
             }
         }
         panic!("couldn't find target binary")
